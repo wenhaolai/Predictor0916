@@ -16,6 +16,7 @@ python Predictor0916/scripts/test_training.py \
   --device npu:0 \
   --torch-dtype float16 \
   --llm-batch-size 1 \
+  --dataset-subset llama3.2-1b-rl \
   --data-path Predictor0916/data/llama3.2-1b-rl-generated.parquet \
   --output-dir Predictor0916/outputs/test_training_npu \
   --validation-ratio 0.2 \

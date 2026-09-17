@@ -52,6 +52,11 @@ class Dataset:
     DATASET_ID = "abinzzz/ForeLen"
     DEFAULT_SUBSET = "llama3.2-1b-rl"
     PROMPT_COLUMN = "user_prompt_content"
+    _SCENARIO_DIRECTORIES = {
+        "longseq": "LongSeq",
+        "reasoning": "Reasoning",
+        "rl": "RL",
+    }
 
     def __init__(
         self,
@@ -156,18 +161,25 @@ class Dataset:
                         raise TypeError(f"Unsupported object loaded from {self.local_path}.")
         else:
             try:
-                from datasets import load_dataset
+                from huggingface_hub import hf_hub_download
             except ImportError as exc:
                 raise ImportError(
-                    "Downloading ForeLen requires the 'datasets' package. "
-                    "Install it with: pip install datasets"
+                    "Downloading ForeLen requires the 'huggingface_hub' package. "
+                    "Install it with: pip install huggingface_hub"
                 ) from exc
-            source = load_dataset(
-                self.DATASET_ID,
-                self.subset,
-                split=self.source_split,
+
+            source_file = hf_hub_download(
+                repo_id=self.DATASET_ID,
+                filename=self._hub_source_filename(),
+                repo_type="dataset",
                 cache_dir=str(self.cache_dir) if self.cache_dir is not None else None,
             )
+            # Read only the prompt column from the requested split. ForeLen's
+            # raw CSV splits currently have inconsistent auxiliary columns
+            # (for example, dataset_name appears in some train files). Loading
+            # one raw file avoids datasets.load_dataset trying to cast every
+            # split to a single incompatible schema.
+            source = pd.read_csv(source_file, usecols=[self.PROMPT_COLUMN])
 
         columns = set(source.columns if isinstance(source, pd.DataFrame) else source.column_names)
         if self.PROMPT_COLUMN not in columns:
@@ -175,6 +187,38 @@ class Dataset:
                 f"ForeLen source is missing column {self.PROMPT_COLUMN!r}; found {sorted(columns)}"
             )
         return source
+
+    def _hub_source_filename(self) -> str:
+        """Map a ForeLen config name to its raw CSV path in the Hub repo."""
+        if self.source_split not in {"train", "validation", "test"}:
+            raise ValueError(
+                "source_split must be one of 'train', 'validation', or 'test' "
+                "when downloading ForeLen from the Hub."
+            )
+
+        scenario_key = next(
+            (
+                scenario
+                for scenario in self._SCENARIO_DIRECTORIES
+                if self.subset.endswith(f"-{scenario}")
+            ),
+            None,
+        )
+        if scenario_key is None:
+            supported = ", ".join(sorted(self._SCENARIO_DIRECTORIES))
+            raise ValueError(
+                f"Cannot map ForeLen subset {self.subset!r} to a raw file. "
+                f"Its name must end with one of: {supported}."
+            )
+
+        model_config = self.subset[: -(len(scenario_key) + 1)]
+        try:
+            model_family, model_size = model_config.rsplit("-", maxsplit=1)
+        except ValueError as exc:
+            raise ValueError(f"Invalid ForeLen subset name: {self.subset!r}") from exc
+        model_directory = f"{model_family}_{model_size}"
+        scenario_directory = self._SCENARIO_DIRECTORIES[scenario_key]
+        return f"{model_directory}/{scenario_directory}/{self.source_split}.csv"
 
     @staticmethod
     def _iter_prompts(source: Any, max_samples: int | None) -> Iterator[str]:

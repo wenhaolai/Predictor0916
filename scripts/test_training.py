@@ -86,6 +86,14 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Parquet file produced by Dataset.process().",
     )
     parser.add_argument(
+        "--dataset-subset",
+        default=Dataset.DEFAULT_SUBSET,
+        help=(
+            "ForeLen config used when data-path does not exist, for example "
+            "qwen2.5-0.5b-rl."
+        ),
+    )
+    parser.add_argument(
         "--output-dir",
         type=Path,
         default=PROJECT_DIR / "outputs" / "test_training",
@@ -163,6 +171,7 @@ def main(argv: Sequence[str] | None = None) -> dict[str, object]:
     logger.info("Loading processed features from %s", args.data_path)
     dataset = Dataset(
         model_id_or_path=args.model_id_or_path,
+        subset=args.dataset_subset,
         save_path=args.data_path,
         model=feature_model,
         model_batch_size=args.llm_batch_size,
@@ -267,6 +276,7 @@ def main(argv: Sequence[str] | None = None) -> dict[str, object]:
         "max_prompt_length": args.max_prompt_length,
         "trust_remote_code": args.trust_remote_code,
         "data_path": str(args.data_path),
+        "dataset_subset": args.dataset_subset,
         "validation_ratio": args.validation_ratio,
         "input_dim": int(train_features.shape[1]),
         "num_bins": args.num_bins,

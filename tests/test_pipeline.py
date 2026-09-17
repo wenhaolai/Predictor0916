@@ -7,7 +7,7 @@ import pytest
 import torch
 
 from Predictor0916.scripts.test_training import main as training_main
-from Predictor0916.src import MLP, Model, Trainer
+from Predictor0916.src import Dataset, MLP, Model, Trainer
 
 
 class FakeTokenizer:
@@ -190,3 +190,28 @@ def test_training_main_processes_dataset_when_parquet_is_missing(tmp_path, monke
 
     assert process_calls == [data_path]
     assert data_path.is_file()
+
+
+def test_forelen_hub_loader_reads_only_requested_raw_split(tmp_path, monkeypatch):
+    raw_csv = tmp_path / "train.csv"
+    pd.DataFrame(
+        {
+            "user_prompt_content": ["first", "second"],
+            "response_content": ["a", "b"],
+            "target_length": [1, 1],
+            "dataset_name": ["example", "example"],
+        }
+    ).to_csv(raw_csv, index=False)
+    download_calls = []
+
+    def fake_download(**kwargs):
+        download_calls.append(kwargs)
+        return str(raw_csv)
+
+    monkeypatch.setattr("huggingface_hub.hf_hub_download", fake_download)
+    dataset = Dataset(subset="qwen2.5-0.5b-rl", source_split="train")
+    source = dataset._load_source()
+
+    assert download_calls[0]["filename"] == "qwen2.5_0.5b/RL/train.csv"
+    assert list(source.columns) == ["user_prompt_content"]
+    assert source["user_prompt_content"].tolist() == ["first", "second"]

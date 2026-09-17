@@ -41,6 +41,7 @@ Python
 PyTorch
 Transformers
 datasets
+huggingface_hub
 pandas
 NumPy
 PyArrow
@@ -185,6 +186,7 @@ python Predictor0916/scripts/test_training.py \
 | 参数 | 默认值 | 说明 |
 | --- | --- | --- |
 | `--data-path` | `Predictor0916/data/llama3.2-1b-rl-generated.parquet` | 已处理 Parquet 的读取/生成位置 |
+| `--dataset-subset` | `llama3.2-1b-rl` | Parquet 不存在时使用的 ForeLen config；切换到 Qwen2.5-0.5B 时可设为 `qwen2.5-0.5b-rl` |
 | `--output-dir` | `Predictor0916/outputs/test_training` | checkpoint、指标和预测结果的输出目录 |
 | `--validation-ratio` | `0.2` | 验证集比例，必须严格位于 `(0, 1)` |
 | `--seed` | `42` | 数据划分、参数初始化和训练随机种子 |
@@ -305,6 +307,7 @@ python -m pytest Predictor0916/tests -q
 ## 注意事项
 
 - `--data-path` 已存在时不会重新生成数据。用户需要确保该文件确实由 `--model-id-or-path` 指定的同一个 LLM 生成；当前 Parquet 本身不保存模型身份元数据。
+- 更换 LLM 时应同步设置 `--dataset-subset`。例如 Qwen2.5-0.5B 的 RL 数据对应 `qwen2.5-0.5b-rl`。
 - 主训练脚本目前无论 Parquet 是否已经存在，都会先加载指定 LLM。请预留相应设备内存。
 - 数据预处理默认使用确定性生成 `do_sample=False`。
 - 更换 LLM 后隐藏维度可能变化，旧 MLP checkpoint 通常无法直接加载。
