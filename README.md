@@ -154,7 +154,7 @@ python Predictor0916/scripts/test_training.py \
 
 ### Google Colab
 
-在 Colab 中打开 `scripts/test_training_colab.ipynb`，选择 GPU 运行时后按顺序执行各单元格。Notebook 包含依赖安装、GPU 检查、Hugging Face 登录、实验配置、训练、结果查看和输出下载。Colab T4 默认建议使用 `float16`。
+在 Colab 中打开 `scripts/test_training_colab.ipynb`，选择 GPU 运行时后按顺序执行各单元格。Notebook 不调用封装后的 `training_main()`，而是将数据准备、Qwen 模型下载、ForeLen 数据处理、Trainer 初始化、训练和结果保存拆成独立步骤。Notebook 默认使用 `Qwen/Qwen2.5-0.5B-Instruct` 和 ForeLen 的 `qwen2.5-0.5b-longseq` subset；Colab T4 默认使用 `float16`。
 
 ### 从已有 MLP 参数继续训练
 

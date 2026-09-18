@@ -31,6 +31,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import torch
 from torch.utils.data import DataLoader, TensorDataset
+from tqdm.auto import tqdm
 
 from .model import Model
 from .utils import ensure_dir, get_logger, set_seed
@@ -263,6 +264,7 @@ class Dataset:
         set_seed(self.seed)
         source = self._load_source()
         prompts = self._iter_prompts(source, max_samples)
+        prompt_count = len(source) if max_samples is None else min(len(source), max_samples)
         model = self._get_model()
         temporary_path = output_path.with_suffix(output_path.suffix + ".tmp")
         if temporary_path.exists():
@@ -278,6 +280,13 @@ class Dataset:
         hidden_buffer: list[list[float]] = []
         length_buffer: list[int] = []
         processed = 0
+        prompt_progress = tqdm(
+            prompts,
+            total=prompt_count,
+            desc="Processing prompts",
+            unit="prompt",
+            dynamic_ncols=True,
+        )
 
         def flush() -> None:
             nonlocal writer
@@ -297,7 +306,7 @@ class Dataset:
             length_buffer.clear()
 
         try:
-            for processed, prompt in enumerate(prompts, start=1):
+            for processed, prompt in enumerate(prompt_progress, start=1):
                 hidden_state = model.extract(prompt)
                 if hidden_state.ndim != 2 or hidden_state.shape[0] != 1:
                     raise RuntimeError(
@@ -311,19 +320,23 @@ class Dataset:
                 if response_length.numel() != 1:
                     raise RuntimeError("Model.generate(prompt) must return exactly one length.")
                 hidden_buffer.append(hidden_state[0].detach().cpu().float().tolist())
-                length_buffer.append(int(response_length.reshape(-1)[0].item()))
+                response_length_value = int(response_length.reshape(-1)[0].item())
+                length_buffer.append(response_length_value)
+                prompt_progress.set_postfix(response_length=response_length_value)
                 if len(hidden_buffer) >= writer_batch_size:
                     flush()
                 if log_every > 0 and processed % log_every == 0:
                     logger.info("Processed %d prompts", processed)
 
             flush()
+            prompt_progress.close()
             if writer is None:
                 raise ValueError("The selected ForeLen source split contains no samples.")
             writer.close()
             writer = None
             os.replace(temporary_path, output_path)
         except Exception:
+            prompt_progress.close()
             if writer is not None:
                 writer.close()
             if temporary_path.exists():

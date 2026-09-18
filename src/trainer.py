@@ -18,6 +18,7 @@ from typing import Any
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, TensorDataset
+from tqdm.auto import tqdm
 
 from .mlp import MLP
 from .utils import ensure_dir, get_logger, resolve_device
@@ -120,12 +121,23 @@ class Trainer:
             generator=generator if shuffle else None,
         )
 
-    def _train_epoch(self, loader: DataLoader) -> tuple[float, float]:
+    def _train_epoch(
+        self,
+        loader: DataLoader,
+        epoch: int,
+    ) -> tuple[float, float]:
         self.model.train()
         total_loss = 0.0
         total_absolute_error = 0.0
         sample_count = 0
-        for features, targets in loader:
+        batch_progress = tqdm(
+            loader,
+            desc=f"Epoch {epoch}/{self.epochs}",
+            unit="batch",
+            leave=False,
+            dynamic_ncols=True,
+        )
+        for features, targets in batch_progress:
             features = features.to(self.device)
             targets = targets.to(self.device)
             self.optimizer.zero_grad(set_to_none=True)
@@ -138,6 +150,7 @@ class Trainer:
             total_loss += float(loss.detach().item()) * batch_size
             total_absolute_error += float(torch.abs(predictions.detach() - targets).sum().item())
             sample_count += batch_size
+            batch_progress.set_postfix(loss=f"{loss.detach().item():.4f}")
         return total_loss / sample_count, total_absolute_error / sample_count
 
     @torch.no_grad()
@@ -190,8 +203,14 @@ class Trainer:
         best_state = copy.deepcopy(self.model.state_dict())
         bad_epochs = 0
 
-        for epoch in range(self.epochs):
-            train_loss, train_mae = self._train_epoch(train_loader)
+        epoch_progress = tqdm(
+            range(self.epochs),
+            desc="Training",
+            unit="epoch",
+            dynamic_ncols=True,
+        )
+        for epoch in epoch_progress:
+            train_loss, train_mae = self._train_epoch(train_loader, epoch + 1)
             history["train_loss"].append(train_loss)
             history["train_mae"].append(train_mae)
 
@@ -202,6 +221,12 @@ class Trainer:
                 score = validation["mae"]
             else:
                 score = train_loss
+
+            epoch_progress.set_postfix(
+                train_loss=f"{train_loss:.4f}",
+                train_mae=f"{train_mae:.4f}",
+                score=f"{score:.4f}",
+            )
 
             history["epochs_trained"] = epoch + 1
             if score < best_score:
@@ -224,6 +249,7 @@ class Trainer:
                 history["stopped_early"] = True
                 break
 
+        epoch_progress.close()
         self.model.load_state_dict(best_state)
         history["best_score"] = best_score
         if self.checkpoint_dir is not None:
