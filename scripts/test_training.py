@@ -77,6 +77,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Optional tokenizer truncation limit for LLM prompts.",
     )
     parser.add_argument(
+        "--max-new-tokens",
+        type=int,
+        default=1024,
+        help="Maximum number of response tokens generated during preprocessing.",
+    )
+    parser.add_argument(
         "--trust-remote-code",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -201,6 +207,7 @@ def main(argv: Sequence[str] | None = None) -> dict[str, object]:
         torch_dtype=args.torch_dtype,
         max_prompt_length=args.max_prompt_length,
         trust_remote_code=args.trust_remote_code,
+        max_new_tokens=args.max_new_tokens,
         seed=args.seed,
     )
     if args.data_path.exists():
@@ -300,6 +307,7 @@ def main(argv: Sequence[str] | None = None) -> dict[str, object]:
         "llm_max_memory": max_memory,
         "torch_dtype": args.torch_dtype,
         "max_prompt_length": args.max_prompt_length,
+        "max_new_tokens": args.max_new_tokens,
         "trust_remote_code": args.trust_remote_code,
         "data_path": str(args.data_path),
         "dataset_subset": args.dataset_subset,

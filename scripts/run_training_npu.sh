@@ -17,8 +17,11 @@ python Predictor0916/scripts/test_training.py \
   --llm-max-memory 0=48GiB 1=48GiB \
   --device npu:0 \
   --torch-dtype float16 \
-  --llm-batch-size 1 \
-  --data-path Predictor0916/data/qwen-generated.parquet \
+  --llm-batch-size 4 \
+  --max-prompt-length 512 \
+  --max-new-tokens 1024 \
+  --loacl-path Predictor0916/data/train.csv \
+  --data-path Predictor0916/data/qwen-chat-nothink-p512-o1024.parquet \
   --output-dir Predictor0916/outputs/test_training_npu \
   --validation-ratio 0.2 \
   --num-bins 20 \

@@ -13,6 +13,7 @@ from Predictor0916.src import Dataset, MLP, Model, Trainer
 class FakeTokenizer:
     pad_token_id = 0
     eos_token_id = 2
+    truncation_side = "right"
 
     def __call__(self, prompts, **kwargs):
         assert len(prompts) == 2
@@ -20,6 +21,19 @@ class FakeTokenizer:
             "input_ids": torch.tensor([[4, 5, 0, 0], [0, 0, 7, 8]]),
             "attention_mask": torch.tensor([[1, 1, 0, 0], [0, 0, 1, 1]]),
         }
+
+    def apply_chat_template(
+        self,
+        messages,
+        *,
+        tokenize,
+        add_generation_prompt,
+        enable_thinking,
+    ):
+        assert tokenize is False
+        assert add_generation_prompt is True
+        assert enable_thinking is False
+        return f"<user>{messages[0]['content']}</user><assistant><no-think>"
 
 
 class FakeBackbone:
@@ -213,9 +227,24 @@ def test_training_main_processes_dataset_when_parquet_is_missing(tmp_path, monke
 
 
 def test_training_main_uses_local_prompts(tmp_path, monkeypatch):
-    monkeypatch.setattr(Model, "load_model", lambda model: model)
-    monkeypatch.setattr(Model, "extract", lambda model, prompt: torch.ones(1, 4))
-    monkeypatch.setattr(Model, "generate", lambda model, prompt, **kwargs: torch.tensor([len(prompt)]))
+    extract_calls = []
+    generate_calls = []
+
+    def fake_load_model(model):
+        model.tokenizer = FakeTokenizer()
+        return model
+
+    def fake_extract(model, prompts, **kwargs):
+        extract_calls.append((list(prompts), kwargs))
+        return torch.ones(len(prompts), 4)
+
+    def fake_generate(model, prompts, **kwargs):
+        generate_calls.append((list(prompts), kwargs))
+        return torch.tensor([index + 1 for index in range(len(prompts))])
+
+    monkeypatch.setattr(Model, "load_model", fake_load_model)
+    monkeypatch.setattr(Model, "extract", fake_extract)
+    monkeypatch.setattr(Model, "generate", fake_generate)
 
     def reject_download(**kwargs):
         pytest.fail("Local input must not download ForeLen")
@@ -230,8 +259,15 @@ def test_training_main_uses_local_prompts(tmp_path, monkeypatch):
         "--data-path", str(processed_path),
         "--output-dir", str(tmp_path / "output"),
         "--llm-device", "cpu", "--device", "cpu", "--epochs", "1",
+        "--llm-batch-size", "2", "--max-new-tokens", "7",
     ])
-    assert pd.read_parquet(processed_path)["response_length"].tolist() == [1, 2, 3, 4]
+    assert pd.read_parquet(processed_path)["response_length"].tolist() == [1, 2, 1, 2]
+    assert [len(call[0]) for call in extract_calls] == [2, 2]
+    assert [len(call[0]) for call in generate_calls] == [2, 2]
+    assert all(call[1]["add_special_tokens"] is False for call in extract_calls)
+    assert all(call[1]["add_special_tokens"] is False for call in generate_calls)
+    assert all(call[1]["max_new_tokens"] == 7 for call in generate_calls)
+    assert all("<no-think>" in prompt for call in generate_calls for prompt in call[0])
     assert record["config"]["local_path"] == str(raw_path)
 
 

@@ -82,7 +82,7 @@ class Model:
             loading_kwargs.update(device_map=self.device_map, max_memory=self.max_memory)
         self.model = AutoModelForCausalLM.from_pretrained(
             self.model_id_or_path,
-            torch_dtype=self.torch_dtype,
+            dtype=self.torch_dtype,
             trust_remote_code=self.trust_remote_code,
             **loading_kwargs,
         )
@@ -119,12 +119,17 @@ class Model:
         return positions.masked_fill(~attention_mask.bool(), -1).max(dim=1).values 
 
     @torch.no_grad()
-    def _extract_batch(self, prompts: Sequence[str]) -> torch.Tensor:
+    def _extract_batch(
+        self,
+        prompts: Sequence[str],
+        *,
+        add_special_tokens: bool,
+    ) -> torch.Tensor:
         assert self.model is not None and self.tokenizer is not None
         tokenizer_kwargs: dict[str, Any] = {
             "padding": True,
             "return_tensors": "pt",
-            "add_special_tokens": True,
+            "add_special_tokens": add_special_tokens,
         }
         if self.max_prompt_length is not None:
             tokenizer_kwargs.update(
@@ -154,7 +159,12 @@ class Model:
         features = hidden_states[batch_indices, last_indices] # extract target hidden states [batch_size, hidden_size]
         return features.detach().cpu().float()
 
-    def extract(self, x: str | Sequence[str]) -> torch.Tensor:
+    def extract(
+        self,
+        x: str | Sequence[str],
+        *,
+        add_special_tokens: bool = True,
+    ) -> torch.Tensor:
         """Run prefill and return a tensor of shape ``(N, hidden_size)``."""
         prompts = [x] if isinstance(x, str) else list(x)
         if not prompts:
@@ -165,7 +175,12 @@ class Model:
 
         features = []
         for start in range(0, len(prompts), self.batch_size):
-            features.append(self._extract_batch(prompts[start : start + self.batch_size]))
+            features.append(
+                self._extract_batch(
+                    prompts[start : start + self.batch_size],
+                    add_special_tokens=add_special_tokens,
+                )
+            )
         return torch.cat(features, dim=0)
 
     @staticmethod
@@ -205,6 +220,7 @@ class Model:
         x: str | Sequence[str],
         *,
         max_new_tokens: int | None = 8192,
+        add_special_tokens: bool = True,
         **generation_kwargs: Any,
     ) -> torch.Tensor:
         """
@@ -238,7 +254,7 @@ class Model:
                 tokenizer_kwargs: dict[str, Any] = {
                     "padding": True,
                     "return_tensors": "pt",
-                    "add_special_tokens": True,
+                    "add_special_tokens": add_special_tokens,
                 }
                 if self.max_prompt_length is not None:
                     tokenizer_kwargs.update(

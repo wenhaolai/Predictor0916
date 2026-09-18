@@ -6,8 +6,8 @@ This class has two methods:
 1. process
     (1) Call .model.Model to create target model inference class as self.model
     (2) Download or Load from local path, read subset 'llama3.2-1b-rl', extract column 'user_prompt_content'
-    (3) For each prompt, call self.model.extract(prompt) to get its hidden states after prefill
-    (4) Instead of using column 'target_length' from subset, call self.model.generate(prompt) to get response_length
+    (3) Wrap prompts with the model chat template and run batched prefill to extract hidden states
+    (4) Instead of using column 'target_length', run batched non-thinking generation to get response lengths
     (5) Save hidden_state and response_length in a parquet file for a given save_path
 
 2. load
@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import os
 import random
+from itertools import islice
 from pathlib import Path
 from typing import Any, Iterator, Mapping, Sequence
 
@@ -74,7 +75,7 @@ class Dataset:
         torch_dtype: str | torch.dtype = "bfloat16",
         max_prompt_length: int | None = None,
         trust_remote_code: bool = True,
-        max_new_tokens: int = 8192,
+        max_new_tokens: int = 1024,
         generation_kwargs: Mapping[str, Any] | None = None,
         seed: int = 42,
     ) -> None:
@@ -281,7 +282,6 @@ class Dataset:
         length_buffer: list[int] = []
         processed = 0
         prompt_progress = tqdm(
-            prompts,
             total=prompt_count,
             desc="Processing prompts",
             unit="prompt",
@@ -306,27 +306,66 @@ class Dataset:
             length_buffer.clear()
 
         try:
-            for processed, prompt in enumerate(prompt_progress, start=1):
-                hidden_state = model.extract(prompt)
-                if hidden_state.ndim != 2 or hidden_state.shape[0] != 1:
-                    raise RuntimeError(
-                        "Model.extract(prompt) must return shape (1, hidden_dim)."
+            if model.tokenizer is None:
+                model.load_model()
+            if model.tokenizer is None or not hasattr(model.tokenizer, "apply_chat_template"):
+                raise RuntimeError("The loaded tokenizer does not provide apply_chat_template().")
+
+            original_truncation_side = getattr(model.tokenizer, "truncation_side", "right")
+            model.tokenizer.truncation_side = "left"
+            inference_batch_size = model.batch_size
+            try:
+                while True:
+                    raw_prompts = list(islice(prompts, inference_batch_size))
+                    if not raw_prompts:
+                        break
+                    formatted_prompts = [
+                        model.tokenizer.apply_chat_template(
+                            [{"role": "user", "content": prompt}],
+                            tokenize=False,
+                            add_generation_prompt=True,
+                            enable_thinking=False,
+                        )
+                        for prompt in raw_prompts
+                    ]
+                    hidden_states = model.extract(
+                        formatted_prompts,
+                        add_special_tokens=False,
                     )
-                response_length = model.generate(
-                    prompt,
-                    max_new_tokens=self.max_new_tokens,
-                    **self.generation_kwargs,
-                )
-                if response_length.numel() != 1:
-                    raise RuntimeError("Model.generate(prompt) must return exactly one length.")
-                hidden_buffer.append(hidden_state[0].detach().cpu().float().tolist())
-                response_length_value = int(response_length.reshape(-1)[0].item())
-                length_buffer.append(response_length_value)
-                prompt_progress.set_postfix(response_length=response_length_value)
-                if len(hidden_buffer) >= writer_batch_size:
-                    flush()
-                if log_every > 0 and processed % log_every == 0:
-                    logger.info("Processed %d prompts", processed)
+                    batch_size = len(formatted_prompts)
+                    if hidden_states.ndim != 2 or hidden_states.shape[0] != batch_size:
+                        raise RuntimeError(
+                            "Model.extract(batch) must return shape (batch_size, hidden_dim)."
+                        )
+                    response_lengths = model.generate(
+                        formatted_prompts,
+                        max_new_tokens=self.max_new_tokens,
+                        add_special_tokens=False,
+                        **self.generation_kwargs,
+                    )
+                    if response_lengths.numel() != batch_size:
+                        raise RuntimeError(
+                            "Model.generate(batch) must return one length per prompt."
+                        )
+                    hidden_buffer.extend(hidden_states.detach().cpu().float().tolist())
+                    batch_lengths = [
+                        int(value) for value in response_lengths.reshape(-1).cpu().tolist()
+                    ]
+                    length_buffer.extend(batch_lengths)
+                    processed += batch_size
+                    prompt_progress.update(batch_size)
+                    prompt_progress.set_postfix(
+                        batch=batch_size,
+                        max_response_length=max(batch_lengths),
+                    )
+                    if len(hidden_buffer) >= writer_batch_size:
+                        flush()
+                    if log_every > 0 and (
+                        processed % log_every == 0 or processed == prompt_count
+                    ):
+                        logger.info("Processed %d prompts", processed)
+            finally:
+                model.tokenizer.truncation_side = original_truncation_side
 
             flush()
             prompt_progress.close()

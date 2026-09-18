@@ -109,9 +109,10 @@ Ascend NPU 环境还需要：
 - `Model.extract()` 提取最后一层最后一个有效 prompt token 的隐藏状态；
 - `Model.generate()` 生成回答并统计生成 token 数；
 - 终止 EOS 和尾部 padding 不计入回答长度；
-- 默认最大生成长度为 8192 个新 token。
+- 使用模型对应的 chat template 包装 prompt，并以 `enable_thinking=False` 关闭 thinking；
+- 默认最大生成长度为 1024 个新 token。
 
-该过程需要逐条执行 LLM prefill 和生成，可能花费较长时间。中途失败时临时文件会被删除，只有全部处理完成后才会产生最终 Parquet。
+该过程按照 `--llm-batch-size` 批量执行 LLM prefill 和生成。中途失败时临时文件会被删除，只有全部处理完成后才会产生最终 Parquet。
 
 ### 已处理数据格式
 
@@ -146,7 +147,9 @@ python Predictor0916/scripts/test_training.py \
   --llm-max-memory 0=48GiB 1=48GiB \
   --device npu:0 \
   --torch-dtype float16 \
-  --llm-batch-size 1 \
+  --llm-batch-size 4 \
+  --max-prompt-length 512 \
+  --max-new-tokens 1024 \
   --data-path Predictor0916/data/llama3.2-1b-rl-generated.parquet \
   --output-dir Predictor0916/outputs/test_training_npu \
   --epochs 10 \
@@ -206,6 +209,7 @@ python Predictor0916/scripts/test_training.py \
 | `--llm-device` | `auto` | LLM 设备，例如 `cpu`、`cuda`、`cuda:0`、`npu:0` |
 | `--torch-dtype` | `bfloat16` | LLM 权重类型，可选 `bfloat16`、`float16`、`float32` |
 | `--max-prompt-length` | 不限制 | 可选的 prompt tokenizer 截断长度，必须为正整数 |
+| `--max-new-tokens` | `1024` | 数据预处理时每条回答允许生成的最大 token 数 |
 | `--trust-remote-code` | 开启 | 允许加载 Hugging Face 仓库中的自定义代码 |
 | `--no-trust-remote-code` | — | 禁用自定义远程代码 |
 
