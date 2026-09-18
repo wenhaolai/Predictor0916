@@ -34,6 +34,8 @@ class Model:
         trust_remote_code: bool = True,
         model: Any | None = None,
         tokenizer: Any | None = None,
+        device_map: str | None = None,
+        max_memory: dict[int | str, str] | None = None,
     ) -> None:
         if batch_size <= 0:
             raise ValueError("batch_size must be positive.")
@@ -43,6 +45,10 @@ class Model:
             raise ValueError("model and tokenizer must be provided together.")
 
         self.model_id_or_path = model_id_or_path
+        if max_memory is not None and device_map is None:
+            raise ValueError("max_memory requires device_map.")
+        self.device_map = device_map
+        self.max_memory = max_memory
         self.batch_size = batch_size
         self.device = resolve_device(device)
         self.torch_dtype = torch_dtype_from_str(torch_dtype)
@@ -52,7 +58,8 @@ class Model:
         self.tokenizer = tokenizer
 
         if self.model is not None:
-            self.model.to(self.device)
+            if not getattr(self.model, "hf_device_map", None):
+                self.model.to(self.device)
             self.model.eval()
 
     def load_model(self):
@@ -70,14 +77,34 @@ class Model:
                 raise ValueError("Tokenizer has neither a pad token nor an EOS token.")
             self.tokenizer.pad_token = self.tokenizer.eos_token
 
+        loading_kwargs = {}
+        if self.device_map is not None:
+            loading_kwargs.update(device_map=self.device_map, max_memory=self.max_memory)
         self.model = AutoModelForCausalLM.from_pretrained(
             self.model_id_or_path,
             torch_dtype=self.torch_dtype,
             trust_remote_code=self.trust_remote_code,
+            **loading_kwargs,
         )
-        self.model.to(self.device)
+        if self.device_map is None:
+            self.model.to(self.device)
+        else:
+            logger.info("Loaded model device map: %s", self.model.hf_device_map)
         self.model.eval()
         return self
+
+    def _input_device(self) -> torch.device:
+        """Place inputs on the embedding device of a dispatched model."""
+        if getattr(self.model, "hf_device_map", None):
+            embedding = self.model.get_input_embeddings()
+            hook_device = getattr(getattr(embedding, "_hf_hook", None), "execution_device", None)
+            if hook_device is not None:
+                if isinstance(hook_device, int):
+                    return torch.device(self.device.type, hook_device)
+                return torch.device(hook_device)
+            if embedding.weight.device.type != "meta":
+                return embedding.weight.device
+        return self.device
 
     @staticmethod
     def _last_token_indices(attention_mask: torch.Tensor) -> torch.Tensor:
@@ -108,8 +135,9 @@ class Model:
             tokenizer_kwargs["truncation"] = False
 
         encoded = self.tokenizer(list(prompts), **tokenizer_kwargs)
-        input_ids = encoded["input_ids"].to(self.device)
-        attention_mask = encoded["attention_mask"].to(self.device)
+        input_device = self._input_device()
+        input_ids = encoded["input_ids"].to(input_device)
+        attention_mask = encoded["attention_mask"].to(input_device)
         outputs = self.model(
             input_ids=input_ids,
             attention_mask=attention_mask,
@@ -121,7 +149,8 @@ class Model:
             raise RuntimeError("The backbone did not return hidden states.")
         hidden_states = outputs.hidden_states[-1] # last layer's hidden state [batch, seq_len, hidden_size]
         last_indices = self._last_token_indices(attention_mask) # last real token's position, exclude padding token [batch_size,]
-        batch_indices = torch.arange(hidden_states.shape[0], device=self.device) # batch index [batch_size, ]
+        last_indices = last_indices.to(hidden_states.device)
+        batch_indices = torch.arange(hidden_states.shape[0], device=hidden_states.device)
         features = hidden_states[batch_indices, last_indices] # extract target hidden states [batch_size, hidden_size]
         return features.detach().cpu().float()
 
@@ -220,8 +249,9 @@ class Model:
                     tokenizer_kwargs["truncation"] = False
 
                 encoded = self.tokenizer(batch, **tokenizer_kwargs)
-                input_ids = encoded["input_ids"].to(self.device)
-                attention_mask = encoded["attention_mask"].to(self.device)
+                input_device = self._input_device()
+                input_ids = encoded["input_ids"].to(input_device)
+                attention_mask = encoded["attention_mask"].to(input_device)
                 call_kwargs = dict(generation_kwargs)
                 if max_new_tokens is not None and "max_length" not in call_kwargs:
                     call_kwargs.setdefault("max_new_tokens", max_new_tokens)
@@ -260,5 +290,9 @@ class Model:
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+        if hasattr(torch, "npu") and torch.npu.is_available():
+            for index in range(torch.npu.device_count()):
+                with torch.npu.device(index):
+                    torch.npu.empty_cache()
 
     close = unload_model

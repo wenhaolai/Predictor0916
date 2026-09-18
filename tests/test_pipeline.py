@@ -79,6 +79,26 @@ def test_mlp_forward_and_soft_labels():
     assert torch.all((predictions >= 0.0) & (predictions <= 100.0))
 
 
+def test_dispatched_model_is_not_moved_to_single_device(monkeypatch):
+    backbone = FakeBackbone()
+    backbone.hf_device_map = {"embedding": "cpu", "layers": "cpu"}
+    backbone.get_input_embeddings = lambda: SimpleNamespace(weight=torch.ones(1))
+    backbone.to = lambda device: pytest.fail("Dispatched model must not be moved as a whole")
+    calls = []
+
+    def load_backbone(*args, **kwargs):
+        calls.append(kwargs)
+        return backbone
+
+    monkeypatch.setattr("Predictor0916.src.model.AutoModelForCausalLM.from_pretrained", load_backbone)
+    monkeypatch.setattr("Predictor0916.src.model.AutoTokenizer.from_pretrained", lambda *a, **kw: FakeTokenizer())
+    extractor = Model("fake", device="cpu", device_map="balanced", max_memory={0: "48GiB", 1: "48GiB"})
+    features = extractor.extract(["first", "second"])
+    assert calls[0]["device_map"] == "balanced"
+    assert calls[0]["max_memory"] == {0: "48GiB", 1: "48GiB"}
+    assert features.tolist() == [[1.0] * 3, [13.0] * 3]
+
+
 @pytest.mark.parametrize("loss_type", ["mae", "soft_label"])
 def test_trainer_supports_both_losses(loss_type):
     features = torch.randn(20, 6)
@@ -190,6 +210,29 @@ def test_training_main_processes_dataset_when_parquet_is_missing(tmp_path, monke
 
     assert process_calls == [data_path]
     assert data_path.is_file()
+
+
+def test_training_main_uses_local_prompts(tmp_path, monkeypatch):
+    monkeypatch.setattr(Model, "load_model", lambda model: model)
+    monkeypatch.setattr(Model, "extract", lambda model, prompt: torch.ones(1, 4))
+    monkeypatch.setattr(Model, "generate", lambda model, prompt, **kwargs: torch.tensor([len(prompt)]))
+
+    def reject_download(**kwargs):
+        pytest.fail("Local input must not download ForeLen")
+
+    monkeypatch.setattr("huggingface_hub.hf_hub_download", reject_download)
+    raw_path = tmp_path / "train.csv"
+    pd.DataFrame({"user_prompt_content": ["a", "bb", "ccc", "dddd"]}).to_csv(raw_path, index=False)
+    processed_path = tmp_path / "processed.parquet"
+    record = training_main([
+        "--model-id-or-path", "dummy",
+        "--local-path", str(raw_path),
+        "--data-path", str(processed_path),
+        "--output-dir", str(tmp_path / "output"),
+        "--llm-device", "cpu", "--device", "cpu", "--epochs", "1",
+    ])
+    assert pd.read_parquet(processed_path)["response_length"].tolist() == [1, 2, 3, 4]
+    assert record["config"]["local_path"] == str(raw_path)
 
 
 def test_forelen_hub_loader_reads_only_requested_raw_split(tmp_path, monkeypatch):

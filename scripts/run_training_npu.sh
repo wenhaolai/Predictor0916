@@ -6,18 +6,19 @@ set -Eeuo pipefail
 #   bash Predictor0916/scripts/run_training_npu.sh
 
 # Select the physical Ascend NPU exposed to this training process.
-export ASCEND_RT_VISIBLE_DEVICES=0
+export ASCEND_RT_VISIBLE_DEVICES=0,1
 export HCCL_CONNECT_TIMEOUT=1800
 
 
 python Predictor0916/scripts/test_training.py \
-  --model-id-or-path meta-llama/Llama-3.2-1B-Instruct \
+  --model-id-or-path /data/models/Qwen3.6-35B-A3B \
   --llm-device npu:0 \
+  --llm-device-map balanced \
+  --llm-max-memory 0=48GiB 1=48GiB \
   --device npu:0 \
   --torch-dtype float16 \
   --llm-batch-size 1 \
-  --dataset-subset llama3.2-1b-rl \
-  --data-path Predictor0916/data/llama3.2-1b-rl-generated.parquet \
+  --data-path Predictor0916/data/qwen-generated.parquet \
   --output-dir Predictor0916/outputs/test_training_npu \
   --validation-ratio 0.2 \
   --num-bins 20 \

@@ -1,5 +1,31 @@
 # Predictor0916
 
+## 双卡 Ascend NPU 加载
+
+`run_training_npu.sh` 当前使用两张可见 NPU（`ASCEND_RT_VISIBLE_DEVICES=0,1`），
+通过 Accelerate 将 LLM 权重切分到两张卡；MLP 仍在 `npu:0` 上训练。
+容器必须能够访问这两张卡，并安装与现有 Transformers 环境兼容、支持 NPU 的 `accelerate`。
+这是单进程模型切分，无需使用 `torchrun` 启动两份模型。
+
+```bash
+python -m pip install accelerate
+bash Predictor0916/scripts/run_training_npu.sh
+```
+
+新增参数：
+
+| 参数 | 默认值 | 说明 |
+| --- | --- | --- |
+| `--llm-device-map` | 无（单设备） | `balanced`、`auto`、`balanced_low_0` 或 `sequential` |
+| `--llm-max-memory` | 无 | 如 `0=48GiB 1=48GiB`；需同时指定 device map |
+
+双卡脚本为每张 64 GB HBM 的卡设置 48 GiB 权重预算，为运行时缓存和激活留出空间。
+该预算不是整个进程的显存上限；长 prompt 或长回答仍可能导致 OOM。
+加载日志会打印实际 `hf_device_map`；如果出现 CPU/disk，则存在卸载，速度可能降低。
+这种切分解决权重容量问题，不保证两张卡同时满负载。
+数据准备完成后会卸载 LLM 并清理设备缓存，再训练 MLP。
+本地 CPU 测试验证加载逻辑，实际双 NPU 运行需在服务器验证。
+
 Predictor0916 使用大语言模型在 prefill 阶段产生的隐藏状态预测该请求的输出长度。当前实现从 LLM 最后一层、prompt 最后一个非 padding token 提取表示，并使用轻量级 MLP 将表示映射到长度区间上的概率分布，最终以各区间中心的期望作为预测长度。
 
 项目当前包含两个阶段：
@@ -116,6 +142,8 @@ bash Predictor0916/scripts/run_training_npu.sh
 python Predictor0916/scripts/test_training.py \
   --model-id-or-path meta-llama/Llama-3.2-1B-Instruct \
   --llm-device npu:0 \
+  --llm-device-map balanced \
+  --llm-max-memory 0=48GiB 1=48GiB \
   --device npu:0 \
   --torch-dtype float16 \
   --llm-batch-size 1 \
@@ -125,7 +153,7 @@ python Predictor0916/scripts/test_training.py \
   --batch-size 256
 ```
 
-`ASCEND_RT_VISIBLE_DEVICES=0` 后，程序内部使用的第一张可见卡为逻辑设备 `npu:0`。
+脚本设置 `ASCEND_RT_VISIBLE_DEVICES=0,1`，程序使用逻辑设备 `npu:0` 和 `npu:1`。
 
 ### CPU 或 CUDA GPU
 
@@ -186,6 +214,7 @@ python Predictor0916/scripts/test_training.py \
 | 参数 | 默认值 | 说明 |
 | --- | --- | --- |
 | `--data-path` | `Predictor0916/data/llama3.2-1b-rl-generated.parquet` | 已处理 Parquet 的读取/生成位置 |
+| `--local-path` | 无 | 本地原始 prompt 文件或数据目录（容器内路径），需包含 `user_prompt_content`；仅当 `--data-path` 不存在时使用，指定后从本地读取而不下载 ForeLen |
 | `--dataset-subset` | `llama3.2-1b-rl` | Parquet 不存在时使用的 ForeLen config；切换到 Qwen2.5-0.5B 时可设为 `qwen2.5-0.5b-rl` |
 | `--output-dir` | `Predictor0916/outputs/test_training` | checkpoint、指标和预测结果的输出目录 |
 | `--validation-ratio` | `0.2` | 验证集比例，必须严格位于 `(0, 1)` |

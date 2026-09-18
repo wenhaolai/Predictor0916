@@ -68,6 +68,9 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         default="bfloat16",
         help="Floating-point dtype used to load the LLM.",
     )
+    parser.add_argument("--llm-device-map", choices=("auto", "balanced", "balanced_low_0", "sequential"))
+    parser.add_argument("--llm-max-memory", nargs="+", metavar="DEVICE=LIMIT",
+                        help="Weight budgets, e.g. 0=48GiB 1=48GiB; requires llm-device-map.")
     parser.add_argument(
         "--max-prompt-length",
         type=int,
@@ -84,6 +87,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         type=Path,
         default=PROJECT_DIR / "data" / "llama3.2-1b-rl-generated.parquet",
         help="Parquet file produced by Dataset.process().",
+    )
+    parser.add_argument(
+        "--local-path",
+        type=Path,
+        default=None,
+        help="Local raw prompt file or dataset directory; used when data-path is missing.",
     )
     parser.add_argument(
         "--dataset-subset",
@@ -138,6 +147,16 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 def main(argv: Sequence[str] | None = None) -> dict[str, object]:
     """Run data loading, model setup, training, evaluation, and persistence."""
     args = parse_args(argv)
+    max_memory = None
+    if args.llm_max_memory:
+        if args.llm_device_map is None:
+            raise ValueError("--llm-max-memory requires --llm-device-map")
+        max_memory = {}
+        for item in args.llm_max_memory:
+            key, separator, limit = item.partition("=")
+            if not separator or not limit or not (key.isdigit() or key == "cpu"):
+                raise ValueError("Expected memory budgets such as 0=48GiB 1=48GiB")
+            max_memory[int(key) if key.isdigit() else key] = limit
     requested_devices = (str(args.llm_device), str(args.device))
     if any(device.split(":", maxsplit=1)[0] == "npu" for device in requested_devices):
         try:
@@ -165,6 +184,8 @@ def main(argv: Sequence[str] | None = None) -> dict[str, object]:
         torch_dtype=args.torch_dtype,
         max_prompt_length=args.max_prompt_length,
         trust_remote_code=args.trust_remote_code,
+        device_map=args.llm_device_map,
+        max_memory=max_memory,
     )
     feature_model.load_model()
 
@@ -172,6 +193,7 @@ def main(argv: Sequence[str] | None = None) -> dict[str, object]:
     dataset = Dataset(
         model_id_or_path=args.model_id_or_path,
         subset=args.dataset_subset,
+        local_path=args.local_path,
         save_path=args.data_path,
         model=feature_model,
         model_batch_size=args.llm_batch_size,
@@ -198,6 +220,8 @@ def main(argv: Sequence[str] | None = None) -> dict[str, object]:
                 f"Dataset.process() wrote {processed_path}, expected {args.data_path}."
             )
 
+    # The LLM is no longer needed once the processed dataset is available.
+    feature_model.unload_model()
     train_loader, validation_loader = dataset.load(
         validation_ratio=args.validation_ratio,
         batch_size=args.batch_size,
@@ -272,11 +296,14 @@ def main(argv: Sequence[str] | None = None) -> dict[str, object]:
         "model_id_or_path": args.model_id_or_path,
         "llm_batch_size": args.llm_batch_size,
         "llm_device": args.llm_device,
+        "llm_device_map": args.llm_device_map,
+        "llm_max_memory": max_memory,
         "torch_dtype": args.torch_dtype,
         "max_prompt_length": args.max_prompt_length,
         "trust_remote_code": args.trust_remote_code,
         "data_path": str(args.data_path),
         "dataset_subset": args.dataset_subset,
+        "local_path": str(args.local_path) if args.local_path is not None else None,
         "validation_ratio": args.validation_ratio,
         "input_dim": int(train_features.shape[1]),
         "num_bins": args.num_bins,
