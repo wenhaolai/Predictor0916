@@ -1,4 +1,4 @@
-"""Preprocess one large prompt CSV concurrently on eight two-NPU workers."""
+"""Incrementally preprocess one prompt CSV on eight two-NPU workers."""
 
 from __future__ import annotations
 
@@ -29,7 +29,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Read one raw prompt CSV, split it into eight shards, and preprocess "
-            "all shards concurrently on pairs of Ascend NPUs."
+            "all shards concurrently on pairs of Ascend NPUs. Each completed "
+            "LLM batch is durably appended to a processed CSV."
         )
     )
     parser.add_argument("--input-csv", type=Path, required=True)
@@ -47,7 +48,7 @@ def build_parser() -> argparse.ArgumentParser:
         help='Physical NPU pairs, e.g. "0,1;2,3;...;14,15".',
     )
     # Keep these defaults aligned with preprocess_8die.py.
-    parser.add_argument("--llm-batch-size", type=int, default=4)
+    parser.add_argument("--llm-batch-size", type=int, default=8)
     parser.add_argument("--max-prompt-length", type=int, default=512)
     parser.add_argument("--max-new-tokens", type=int, default=1024)
     parser.add_argument(
@@ -61,7 +62,15 @@ def build_parser() -> argparse.ArgumentParser:
         default="balanced",
     )
     parser.add_argument("--max-memory-per-npu", default="48GiB")
-    parser.add_argument("--writer-batch-size", type=int, default=32)
+    parser.add_argument(
+        "--writer-batch-size",
+        type=int,
+        default=32,
+        help=(
+            "Retained for command compatibility; CSV output is always flushed "
+            "after every LLM batch."
+        ),
+    )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--stagger-seconds", type=float, default=2.0)
     parser.add_argument(
@@ -167,12 +176,8 @@ def run_master(args: argparse.Namespace) -> int:
                 f"Worker {worker_id} received no samples; reduce worker-count below {len(shuffled)}."
             )
         input_path = input_dir / f"shard-{worker_id:02d}.csv"
-        output_path = processed_dir / f"shard-{worker_id:02d}.parquet"
+        output_path = processed_dir / f"shard-{worker_id:02d}.csv"
         log_path = log_dir / f"shard-{worker_id:02d}.log"
-        if output_path.exists() and not args.overwrite:
-            raise FileExistsError(
-                f"Output shard already exists: {output_path}. Use --overwrite to regenerate all shards."
-            )
         shard.to_csv(input_path, index=False, lineterminator="\n")
         shards.append(
             {
@@ -198,6 +203,8 @@ def run_master(args: argparse.Namespace) -> int:
         "torch_dtype": args.torch_dtype,
         "device_map": args.device_map,
         "max_memory_per_npu": args.max_memory_per_npu,
+        "output_format": "csv",
+        "incremental_write": "one durable append per LLM batch",
         "seed": args.seed,
         "shards": shards,
     }
