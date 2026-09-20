@@ -1,5 +1,67 @@
 # Predictor0916
 
+## 8 路并行数据预处理
+
+`scripts/preprocess_8die.py` 会读取 train、validation、test 三个原始 CSV，合并后固定随机打散，均匀拆成 8 个 shard，并启动 8 个独立进程。默认每个进程使用两张物理 NPU：
+
+```text
+worker 0 -> 0,1       worker 4 -> 8,9
+worker 1 -> 2,3       worker 5 -> 10,11
+worker 2 -> 4,5       worker 6 -> 12,13
+worker 3 -> 6,7       worker 7 -> 14,15
+```
+
+容器必须能够访问上述全部设备。若服务器的 NPU 编号或 die 拓扑不同，通过 `--device-pairs` 显式修改，不能仅根据卡数推测编号。
+
+三个 CSV 都必须包含 `user_prompt_content` 列。运行示例：
+
+```bash
+python Predictor0916/scripts/preprocess_8die.py \
+  --train-csv /data/datasets/forelen/train.csv \
+  --validation-csv /data/datasets/forelen/validation.csv \
+  --test-csv /data/datasets/forelen/test.csv \
+  --model-id-or-path /data/models/Qwen3.6-35B-A3B \
+  --output-dir Predictor0916/data/qwen3.6-preprocessed \
+  --device-pairs "0,1;2,3;4,5;6,7;8,9;10,11;12,13;14,15" \
+  --llm-batch-size 4 \
+  --max-prompt-length 512 \
+  --max-new-tokens 1024 \
+  --max-memory-per-npu 48GiB
+```
+
+可先只拆分数据、检查每份样本数和设备映射，不启动 NPU worker：
+
+```bash
+python Predictor0916/scripts/preprocess_8die.py \
+  --train-csv /data/datasets/forelen/train.csv \
+  --validation-csv /data/datasets/forelen/validation.csv \
+  --test-csv /data/datasets/forelen/test.csv \
+  --model-id-or-path /data/models/Qwen3.6-35B-A3B \
+  --output-dir Predictor0916/data/qwen3.6-preprocessed \
+  --prepare-only
+```
+
+输出结构：
+
+```text
+qwen3.6-preprocessed/
+├── manifest.json
+├── inputs/
+│   ├── shard-00.csv             # prompt 及 source_split/source_index/global_index
+│   └── ... shard-07.csv
+├── processed/
+│   ├── shard-00.parquet         # hidden_state、response_length
+│   └── ... shard-07.parquet
+├── logs/
+│   ├── shard-00.log
+│   └── ... shard-07.log
+└── status/
+    ├── shard-00.json            # running/completed/failed、耗时及错误
+    └── ... shard-07.json
+```
+
+每个 `processed/shard-XX.parquet` 的行与对应 `inputs/shard-XX.csv` 严格对齐。后续合并时使用输入 shard 中的 `source_split` 和 `source_index` 恢复原始 train、validation、test 顺序。任一输出已存在时脚本默认停止，避免误覆盖；确认需要全部重算时传入 `--overwrite`。
+
 ## 双卡 Ascend NPU 加载
 
 `run_training_npu.sh` 当前使用两张可见 NPU（`ASCEND_RT_VISIBLE_DEVICES=0,1`），

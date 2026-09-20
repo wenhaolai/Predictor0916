@@ -7,6 +7,7 @@ import pytest
 import torch
 
 from Predictor0916.scripts.test_training import main as training_main
+from Predictor0916.scripts.preprocess_8die import main as preprocess_main
 from Predictor0916.src import Dataset, MLP, Model, Trainer
 
 
@@ -294,3 +295,42 @@ def test_forelen_hub_loader_reads_only_requested_raw_split(tmp_path, monkeypatch
     assert download_calls[0]["filename"] == "qwen2.5_0.5b/RL/train.csv"
     assert list(source.columns) == ["user_prompt_content"]
     assert source["user_prompt_content"].tolist() == ["first", "second"]
+
+
+def test_eight_worker_preprocessing_prepares_recoverable_shards(tmp_path):
+    source_paths = {}
+    expected_rows = set()
+    for split, size in (("train", 11), ("validation", 5), ("test", 4)):
+        path = tmp_path / f"{split}.csv"
+        prompts = [f"{split}-{index}" for index in range(size)]
+        pd.DataFrame({"user_prompt_content": prompts}).to_csv(path, index=False)
+        source_paths[split] = path
+        expected_rows.update((split, index, prompt) for index, prompt in enumerate(prompts))
+
+    output_dir = tmp_path / "preprocessed"
+    return_code = preprocess_main(
+        [
+            "--train-csv", str(source_paths["train"]),
+            "--validation-csv", str(source_paths["validation"]),
+            "--test-csv", str(source_paths["test"]),
+            "--model-id-or-path", "dummy-model",
+            "--output-dir", str(output_dir),
+            "--prepare-only",
+        ]
+    )
+
+    recovered_rows = set()
+    shard_sizes = []
+    for worker_id in range(8):
+        shard = pd.read_csv(output_dir / "inputs" / f"shard-{worker_id:02d}.csv")
+        shard_sizes.append(len(shard))
+        recovered_rows.update(
+            (row.source_split, row.source_index, row.user_prompt_content)
+            for row in shard.itertuples(index=False)
+        )
+
+    manifest = pd.read_json(output_dir / "manifest.json", typ="series")
+    assert return_code == 0
+    assert recovered_rows == expected_rows
+    assert max(shard_sizes) - min(shard_sizes) <= 1
+    assert manifest["total_samples"] == 20
