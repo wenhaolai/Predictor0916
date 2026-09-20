@@ -8,6 +8,9 @@ import torch
 
 from Predictor0916.scripts.test_training import main as training_main
 from Predictor0916.scripts.preprocess_8die import main as preprocess_main
+from Predictor0916.scripts.preprocess_single_csv_8die import (
+    main as single_csv_preprocess_main,
+)
 from Predictor0916.scripts.train_predictor_8shards import main as shard_training_main
 from Predictor0916.src import Dataset, MLP, Model, Trainer
 
@@ -335,6 +338,43 @@ def test_eight_worker_preprocessing_prepares_recoverable_shards(tmp_path):
     assert recovered_rows == expected_rows
     assert max(shard_sizes) - min(shard_sizes) <= 1
     assert manifest["total_samples"] == 20
+
+
+def test_single_csv_preprocessing_prepares_eight_recoverable_shards(tmp_path):
+    input_path = tmp_path / "test.csv"
+    prompts = [f"rl-test-{index}" for index in range(19)]
+    pd.DataFrame({"user_prompt_content": prompts}).to_csv(input_path, index=False)
+
+    output_dir = tmp_path / "single-csv-preprocessed"
+    return_code = single_csv_preprocess_main(
+        [
+            "--input-csv", str(input_path),
+            "--source-name", "rl-test-16k",
+            "--model-id-or-path", "dummy-model",
+            "--output-dir", str(output_dir),
+            "--prepare-only",
+        ]
+    )
+
+    recovered_rows = set()
+    shard_sizes = []
+    for worker_id in range(8):
+        shard = pd.read_csv(output_dir / "inputs" / f"shard-{worker_id:02d}.csv")
+        shard_sizes.append(len(shard))
+        recovered_rows.update(
+            (row.source_split, row.source_index, row.user_prompt_content)
+            for row in shard.itertuples(index=False)
+        )
+
+    manifest = pd.read_json(output_dir / "manifest.json", typ="series")
+    expected_rows = {
+        ("rl-test-16k", index, prompt) for index, prompt in enumerate(prompts)
+    }
+    assert return_code == 0
+    assert recovered_rows == expected_rows
+    assert sum(shard_sizes) == len(prompts)
+    assert max(shard_sizes) - min(shard_sizes) <= 1
+    assert manifest["total_samples"] == len(prompts)
 
 
 def test_predictor_training_combines_eight_shards_and_holds_out_validation(tmp_path):

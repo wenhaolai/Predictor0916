@@ -62,6 +62,45 @@ qwen3.6-preprocessed/
 
 每个 `processed/shard-XX.parquet` 的行与对应 `inputs/shard-XX.csv` 严格对齐。后续合并时使用输入 shard 中的 `source_split` 和 `source_index` 恢复原始 train、validation、test 顺序。任一输出已存在时脚本默认停止，避免误覆盖；确认需要全部重算时传入 `--overwrite`。
 
+### 单个 16.4K CSV 的 8 路预处理
+
+当训练输入只来自 ForeLen RL 场景的一个 `test.csv` 时，使用
+`scripts/preprocess_single_csv_8die.py`。输入 CSV 必须包含
+`user_prompt_content` 列；脚本会先使用固定随机种子打散全部 prompt，再以轮询方式均匀分给 8 个 worker。其模型参数、batch size、prompt 上限、生成上限和设备映射默认值均与 `preprocess_8die.py` 一致。
+
+建议先只生成输入分片并检查总数：
+
+```bash
+python Predictor0916/scripts/preprocess_single_csv_8die.py \
+  --input-csv /data/datasets/ForeLen/RL/test.csv \
+  --source-name rl-test-16k \
+  --model-id-or-path /data/models/Qwen3.6-35B-A3B \
+  --output-dir Predictor0916/data/qwen3.6-rl-test-16k \
+  --prepare-only
+```
+
+确认 `manifest.json` 中的 `total_samples` 以及八个 shard 的样本数后，删除
+`--prepare-only` 启动实际预处理：
+
+```bash
+python Predictor0916/scripts/preprocess_single_csv_8die.py \
+  --input-csv /data/datasets/ForeLen/RL/test.csv \
+  --source-name rl-test-16k \
+  --model-id-or-path /data/models/Qwen3.6-35B-A3B \
+  --output-dir Predictor0916/data/qwen3.6-rl-test-16k \
+  --device-pairs "0,1;2,3;4,5;6,7;8,9;10,11;12,13;14,15"
+```
+
+默认超参数保持不变：`--llm-batch-size 4`、`--max-prompt-length 512`、
+`--max-new-tokens 1024`、`--torch-dtype float16`、
+`--device-map balanced` 和 `--max-memory-per-npu 48GiB`。输出结构与三 CSV
+脚本完全相同，仍会生成八个 `processed/shard-XX.parquet`。训练命令无需改动，
+只需设置：
+
+```bash
+--preprocessed-dir Predictor0916/data/qwen3.6-rl-test-16k
+```
+
 ## 使用 8 个 shard 训练预测器
 
 `scripts/train_predictor_8shards.py` 只加载预处理后的 hidden states，不再加载 LLM。脚本合并 8 个 Parquet 后，使用固定随机种子按照约 `train:test:validation = 6:1:1` 拆分：
