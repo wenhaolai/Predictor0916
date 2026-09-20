@@ -8,6 +8,7 @@ import torch
 
 from Predictor0916.scripts.test_training import main as training_main
 from Predictor0916.scripts.preprocess_8die import main as preprocess_main
+from Predictor0916.scripts.train_predictor_8shards import main as shard_training_main
 from Predictor0916.src import Dataset, MLP, Model, Trainer
 
 
@@ -334,3 +335,56 @@ def test_eight_worker_preprocessing_prepares_recoverable_shards(tmp_path):
     assert recovered_rows == expected_rows
     assert max(shard_sizes) - min(shard_sizes) <= 1
     assert manifest["total_samples"] == 20
+
+
+def test_predictor_training_combines_eight_shards_and_holds_out_validation(tmp_path):
+    preprocessing_root = tmp_path / "preprocessed"
+    processed_dir = preprocessing_root / "processed"
+    input_dir = preprocessing_root / "inputs"
+    processed_dir.mkdir(parents=True)
+    input_dir.mkdir()
+    for shard_id in range(8):
+        pd.DataFrame(
+            {
+                "hidden_state": [
+                    [float(shard_id), float(row), 1.0, 0.5]
+                    for row in range(4)
+                ],
+                "response_length": [10 + shard_id + row for row in range(4)],
+            }
+        ).to_parquet(processed_dir / f"shard-{shard_id:02d}.parquet", index=False)
+        pd.DataFrame(
+            {
+                "source_split": ["train"] * 4,
+                "source_index": [shard_id * 4 + row for row in range(4)],
+                "global_index": [shard_id * 4 + row for row in range(4)],
+                "user_prompt_content": [f"prompt-{shard_id}-{row}" for row in range(4)],
+            }
+        ).to_csv(input_dir / f"shard-{shard_id:02d}.csv", index=False)
+
+    output_dir = tmp_path / "training"
+    record = shard_training_main(
+        [
+            "--preprocessed-dir", str(preprocessing_root),
+            "--output-dir", str(output_dir),
+            "--device", "cpu",
+            "--epochs", "2",
+            "--batch-size", "4",
+            "--patience", "0",
+        ]
+    )
+
+    assert record["config"]["split_sizes"] == {
+        "train": 24,
+        "test": 4,
+        "validation": 4,
+    }
+    assert set(record["metrics"]["final_validation"]) == {"mae", "rmse", "r2"}
+    assert len(pd.read_csv(output_dir / "validation_predictions.csv")) == 4
+    assert set(pd.read_csv(output_dir / "split_assignments.csv")["assigned_split"]) == {
+        "train", "test", "validation"
+    }
+    assert (output_dir / "checkpoints" / "best_layers.pt").is_file()
+    assert (output_dir / "manifest.json").is_file()
+    assert (output_dir / "metrics.json").is_file()
+    assert (output_dir / "result.json").is_file()

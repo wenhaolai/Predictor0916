@@ -62,6 +62,64 @@ qwen3.6-preprocessed/
 
 每个 `processed/shard-XX.parquet` 的行与对应 `inputs/shard-XX.csv` 严格对齐。后续合并时使用输入 shard 中的 `source_split` 和 `source_index` 恢复原始 train、validation、test 顺序。任一输出已存在时脚本默认停止，避免误覆盖；确认需要全部重算时传入 `--overwrite`。
 
+## 使用 8 个 shard 训练预测器
+
+`scripts/train_predictor_8shards.py` 只加载预处理后的 hidden states，不再加载 LLM。脚本合并 8 个 Parquet 后，使用固定随机种子按照约 `train:test:validation = 6:1:1` 拆分：
+
+- `train`：更新 MLP 参数；
+- `test`：训练期间每个 epoch 的模型选择和 early stopping；
+- `validation`：训练和模型选择全部完成后，仅用于最终精度评估。
+
+单 NPU 启动脚本：
+
+```bash
+bash Predictor0916/scripts/run_train_predictor_npu.sh
+```
+
+对应的完整命令为：
+
+```bash
+export ASCEND_RT_VISIBLE_DEVICES=0
+
+python Predictor0916/scripts/train_predictor_8shards.py \
+  --preprocessed-dir Predictor0916/data/qwen3.6-preprocessed \
+  --output-dir Predictor0916/outputs/qwen3.6-predictor \
+  --expected-shards 8 \
+  --device npu:0 \
+  --num-bins 20 \
+  --target-quantiles 0.01 0.99 \
+  --loss-type soft_label \
+  --lambda-val 0.95 \
+  --epochs 10 \
+  --batch-size 256 \
+  --learning-rate 2e-5 \
+  --weight-decay 0.0 \
+  --patience 3 \
+  --seed 42
+```
+
+`--preprocessed-dir` 可以指向 `preprocess_8die.py` 的输出根目录，也可以直接指向其中的 `processed/`。指向根目录时，脚本还会读取 `inputs/shard-XX.csv`，将原始 split 和行号写入预测结果。
+
+训练输出：
+
+```text
+qwen3.6-predictor/
+├── checkpoints/
+│   └── best_layers.pt
+├── manifest.json
+├── metrics.json
+├── result.json
+├── split_assignments.csv
+└── validation_predictions.csv
+```
+
+- `best_layers.pt`：test MAE 最优轮次对应的 MLP 参数；
+- `split_assignments.csv`：每个 shard 行被分到 train、test 或 validation 的记录；
+- `metrics.json`：训练历史、用于模型选择的 test 指标和最终 validation 指标；
+- `validation_predictions.csv`：最终保留集的预测长度、真实长度、绝对误差及来源信息；
+- `manifest.json`：输入 shard、拆分数量、随机种子、长度范围和训练超参数；
+- `result.json`：本次实验配置、指标及产物路径汇总。
+
 ## 双卡 Ascend NPU 加载
 
 `run_training_npu.sh` 当前使用两张可见 NPU（`ASCEND_RT_VISIBLE_DEVICES=0,1`），
