@@ -10,6 +10,7 @@ python Predictor0916/scripts/train_predictor_8shards.py \
   --output-dir Predictor0916/outputs/qwen3.6-predictor \
   --shard-pattern "shard-*.csv" \
   --expected-shards 8 \
+  --exclude-response-length 1024 \
   --device npu:0 \
   --num-bins 20 \
   --target-quantiles 0.01 0.99 \

@@ -125,6 +125,7 @@ python Predictor0916/scripts/train_predictor_8shards.py \
   --output-dir Predictor0916/outputs/qwen3.6-predictor \
   --shard-pattern "shard-*.csv" \
   --expected-shards 8 \
+  --exclude-response-length 1024 \
   --device npu:0 \
   --num-bins 20 \
   --target-quantiles 0.01 0.99 \
@@ -136,6 +137,11 @@ python Predictor0916/scripts/train_predictor_8shards.py \
   --patience 7 \
   --seed 42
 ```
+
+训练入口会在数据划分前删除 `response_length == 1024` 的样本，避免把达到
+`max_new_tokens` 上限的右删失记录当作真实完整长度。过滤值可通过
+`--exclude-response-length` 调整；过滤前样本数、删除数和过滤后样本数会记录在
+`manifest.json` 的 `filtering` 字段中。
 
 这组参数是 16K 数据的稳健起点：每个 epoch 约 47 个训练 step，50 个 epoch
 给优化器足够的更新机会，实际通常由 early stopping 提前结束。首轮建议直接优化论文主指标

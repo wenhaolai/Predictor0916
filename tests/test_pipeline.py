@@ -393,13 +393,16 @@ def test_predictor_training_combines_eight_shards_and_holds_out_validation(tmp_p
     processed_dir.mkdir(parents=True)
     input_dir.mkdir()
     for shard_id in range(8):
+        response_lengths = [10 + shard_id + row for row in range(4)]
+        if shard_id == 0:
+            response_lengths[0] = 1024
         processed_rows = pd.DataFrame(
             {
                 "hidden_state": [
                     json.dumps([float(shard_id), float(row), 1.0, 0.5])
                     for row in range(4)
                 ],
-                "response_length": [10 + shard_id + row for row in range(4)],
+                "response_length": response_lengths,
             }
         )
         processed_rows.to_csv(
@@ -427,17 +430,25 @@ def test_predictor_training_combines_eight_shards_and_holds_out_validation(tmp_p
     )
 
     assert record["config"]["split_sizes"] == {
-        "train": 24,
-        "test": 4,
-        "validation": 4,
+        "train": 25,
+        "test": 3,
+        "validation": 3,
     }
-    assert record["config"]["sample_count"] == 32
+    assert record["config"]["sample_count"] == 31
+    assert record["config"]["filtering"] == {
+        "excluded_response_length": 1024,
+        "sample_count_before": 32,
+        "excluded_sample_count": 1,
+        "sample_count_after": 31,
+    }
     assert set(record["config"]["target_statistics"]) >= {"p50", "p99", "max"}
     assert set(record["metrics"]["final_validation"]) == {
         "mae", "rmse", "r2", "kendall_tau_b"
     }
-    assert len(pd.read_csv(output_dir / "validation_predictions.csv")) == 4
-    assert set(pd.read_csv(output_dir / "split_assignments.csv")["assigned_split"]) == {
+    assert len(pd.read_csv(output_dir / "validation_predictions.csv")) == 3
+    assignments = pd.read_csv(output_dir / "split_assignments.csv")
+    assert 0 not in assignments["global_index"].tolist()
+    assert set(assignments["assigned_split"]) == {
         "train", "test", "validation"
     }
     assert (output_dir / "checkpoints" / "best_layers.pt").is_file()

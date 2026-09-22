@@ -51,6 +51,15 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument("--expected-shards", type=int, default=8)
+    parser.add_argument(
+        "--exclude-response-length",
+        type=int,
+        default=1024,
+        help=(
+            "Remove samples whose response_length equals this value before "
+            "splitting. Defaults to 1024 to exclude max-new-token-censored rows."
+        ),
+    )
     parser.add_argument("--device", default="npu:0")
     parser.add_argument("--num-bins", type=int, default=20)
     parser.add_argument(
@@ -227,6 +236,8 @@ def main(argv: Sequence[str] | None = None) -> dict[str, object]:
         raise ValueError("target-quantiles must satisfy 0 <= LOW < HIGH <= 1.")
     if args.patience < 0:
         raise ValueError("patience must be non-negative.")
+    if args.exclude_response_length < 0:
+        raise ValueError("exclude-response-length must be non-negative.")
 
     set_seed(args.seed)
     output_dir = ensure_dir(args.output_dir)
@@ -235,6 +246,24 @@ def main(argv: Sequence[str] | None = None) -> dict[str, object]:
         args.preprocessed_dir,
         args.shard_pattern,
         args.expected_shards,
+    )
+    sample_count_before_filtering = len(targets)
+    keep_mask = targets != float(args.exclude_response_length)
+    excluded_sample_count = int((~keep_mask).sum().item())
+    features = features[keep_mask].contiguous()
+    targets = targets[keep_mask].contiguous()
+    provenance = provenance.loc[keep_mask.numpy()].reset_index(drop=True)
+    if len(targets) < 8:
+        raise ValueError(
+            "Fewer than 8 samples remain after excluding response_length == "
+            f"{args.exclude_response_length}: {len(targets)} remain."
+        )
+    logger.info(
+        "Excluded %d/%d samples with response_length == %d; %d remain",
+        excluded_sample_count,
+        sample_count_before_filtering,
+        args.exclude_response_length,
+        len(targets),
     )
     indices = split_indices(len(targets), args.seed)
     split_tensors = {
@@ -340,6 +369,12 @@ def main(argv: Sequence[str] | None = None) -> dict[str, object]:
         "preprocessed_dir": str(args.preprocessed_dir),
         "shards": [str(path) for path in shard_paths],
         "sample_count": len(targets),
+        "filtering": {
+            "excluded_response_length": args.exclude_response_length,
+            "sample_count_before": sample_count_before_filtering,
+            "excluded_sample_count": excluded_sample_count,
+            "sample_count_after": len(targets),
+        },
         "target_statistics": target_statistics,
         "split_ratio": {"train": 6, "test": 1, "validation": 1},
         "split_sizes": {name: len(value) for name, value in indices.items()},
