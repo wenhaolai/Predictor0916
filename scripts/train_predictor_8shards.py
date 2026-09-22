@@ -1,9 +1,10 @@
-"""Train the MLP predictor from eight independently preprocessed Parquet shards."""
+"""Train the MLP predictor from eight independently preprocessed shards."""
 
 from __future__ import annotations
 
 import argparse
 import importlib
+import json
 from pathlib import Path
 import sys
 from typing import Sequence
@@ -38,7 +39,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="Root produced by preprocess_8die.py, or its processed/ directory.",
     )
     parser.add_argument("--output-dir", type=Path, required=True)
-    parser.add_argument("--parquet-pattern", default="shard-*.parquet")
+    parser.add_argument(
+        "--shard-pattern",
+        "--parquet-pattern",
+        dest="shard_pattern",
+        default="shard-*.csv",
+        help=(
+            "Glob for processed shards. CSV (the current preprocessing output) "
+            "and Parquet are supported. --parquet-pattern is retained as a "
+            "backward-compatible alias."
+        ),
+    )
     parser.add_argument("--expected-shards", type=int, default=8)
     parser.add_argument("--device", default="npu:0")
     parser.add_argument("--num-bins", type=int, default=20)
@@ -103,13 +114,35 @@ def load_shards(
     feature_dim: int | None = None
 
     for shard_path in shard_paths:
-        frame = pd.read_parquet(
-            shard_path,
-            columns=["hidden_state", "response_length"],
-        )
+        if shard_path.suffix.lower() == ".csv":
+            frame = pd.read_csv(
+                shard_path,
+                usecols=["hidden_state", "response_length"],
+            )
+            try:
+                shard_features = [
+                    np.asarray(json.loads(value), dtype=np.float32)
+                    for value in frame["hidden_state"]
+                ]
+            except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                raise ValueError(
+                    f"Could not decode hidden_state JSON in {shard_path}: {exc}"
+                ) from exc
+        elif shard_path.suffix.lower() in {".parquet", ".pq"}:
+            frame = pd.read_parquet(
+                shard_path,
+                columns=["hidden_state", "response_length"],
+            )
+            shard_features = [
+                np.asarray(value, dtype=np.float32) for value in frame["hidden_state"]
+            ]
+        else:
+            raise ValueError(
+                f"Unsupported shard format {shard_path.suffix!r} for {shard_path}; "
+                "use CSV or Parquet."
+            )
         if frame.empty:
             raise ValueError(f"Processed shard is empty: {shard_path}")
-        shard_features = [np.asarray(value, dtype=np.float32) for value in frame["hidden_state"]]
         shapes = {value.shape for value in shard_features}
         if len(shapes) != 1 or len(next(iter(shapes))) != 1:
             raise ValueError(
@@ -200,7 +233,7 @@ def main(argv: Sequence[str] | None = None) -> dict[str, object]:
     logger.info("Loading preprocessing shards from %s", args.preprocessed_dir)
     features, targets, provenance, shard_paths = load_shards(
         args.preprocessed_dir,
-        args.parquet_pattern,
+        args.shard_pattern,
         args.expected_shards,
     )
     indices = split_indices(len(targets), args.seed)
@@ -264,6 +297,27 @@ def main(argv: Sequence[str] | None = None) -> dict[str, object]:
     validation_targets_np = validation_targets.numpy()
     validation_metrics = compute_metrics(validation_predictions, validation_targets_np)
 
+    targets_np = targets.numpy()
+    target_percentiles = np.quantile(
+        targets_np,
+        (0.0, 0.01, 0.25, 0.5, 0.75, 0.9, 0.95, 0.99, 1.0),
+    )
+    maximum_target = float(target_percentiles[-1])
+    target_statistics = {
+        "mean": float(np.mean(targets_np)),
+        "std": float(np.std(targets_np)),
+        "min": float(target_percentiles[0]),
+        "p01": float(target_percentiles[1]),
+        "p25": float(target_percentiles[2]),
+        "p50": float(target_percentiles[3]),
+        "p75": float(target_percentiles[4]),
+        "p90": float(target_percentiles[5]),
+        "p95": float(target_percentiles[6]),
+        "p99": float(target_percentiles[7]),
+        "max": maximum_target,
+        "fraction_at_max": float(np.mean(targets_np == maximum_target)),
+    }
+
     checkpoint_path = output_dir / "checkpoints" / "best_layers.pt"
     head.save(checkpoint_path)
     assignments = provenance.copy()
@@ -285,6 +339,8 @@ def main(argv: Sequence[str] | None = None) -> dict[str, object]:
     configuration = {
         "preprocessed_dir": str(args.preprocessed_dir),
         "shards": [str(path) for path in shard_paths],
+        "sample_count": len(targets),
+        "target_statistics": target_statistics,
         "split_ratio": {"train": 6, "test": 1, "validation": 1},
         "split_sizes": {name: len(value) for name, value in indices.items()},
         "seed": args.seed,

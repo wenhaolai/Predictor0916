@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 import pandas as pd
@@ -384,15 +385,18 @@ def test_predictor_training_combines_eight_shards_and_holds_out_validation(tmp_p
     processed_dir.mkdir(parents=True)
     input_dir.mkdir()
     for shard_id in range(8):
-        pd.DataFrame(
+        processed_rows = pd.DataFrame(
             {
                 "hidden_state": [
-                    [float(shard_id), float(row), 1.0, 0.5]
+                    json.dumps([float(shard_id), float(row), 1.0, 0.5])
                     for row in range(4)
                 ],
                 "response_length": [10 + shard_id + row for row in range(4)],
             }
-        ).to_parquet(processed_dir / f"shard-{shard_id:02d}.parquet", index=False)
+        )
+        processed_rows.to_csv(
+            processed_dir / f"shard-{shard_id:02d}.csv", index=False
+        )
         pd.DataFrame(
             {
                 "source_split": ["train"] * 4,
@@ -419,6 +423,8 @@ def test_predictor_training_combines_eight_shards_and_holds_out_validation(tmp_p
         "test": 4,
         "validation": 4,
     }
+    assert record["config"]["sample_count"] == 32
+    assert set(record["config"]["target_statistics"]) >= {"p50", "p99", "max"}
     assert set(record["metrics"]["final_validation"]) == {"mae", "rmse", "r2"}
     assert len(pd.read_csv(output_dir / "validation_predictions.csv")) == 4
     assert set(pd.read_csv(output_dir / "split_assignments.csv")["assigned_split"]) == {

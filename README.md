@@ -60,7 +60,7 @@ qwen3.6-preprocessed/
     └── ... shard-07.json
 ```
 
-每个 `processed/shard-XX.parquet` 的行与对应 `inputs/shard-XX.csv` 严格对齐。后续合并时使用输入 shard 中的 `source_split` 和 `source_index` 恢复原始 train、validation、test 顺序。任一输出已存在时脚本默认停止，避免误覆盖；确认需要全部重算时传入 `--overwrite`。
+每个 `processed/shard-XX.csv` 的行与对应 `inputs/shard-XX.csv` 严格对齐。后续合并时使用输入 shard 中的 `source_split` 和 `source_index` 恢复原始 train、validation、test 顺序。任一输出已存在时脚本默认停止，避免误覆盖；确认需要全部重算时传入 `--overwrite`。
 
 ### 单个 16.4K CSV 的 8 路预处理
 
@@ -94,7 +94,7 @@ python Predictor0916/scripts/preprocess_single_csv_8die.py \
 默认超参数保持不变：`--llm-batch-size 4`、`--max-prompt-length 512`、
 `--max-new-tokens 1024`、`--torch-dtype float16`、
 `--device-map balanced` 和 `--max-memory-per-npu 48GiB`。输出结构与三 CSV
-脚本完全相同，仍会生成八个 `processed/shard-XX.parquet`。训练命令无需改动，
+脚本完全相同，仍会生成八个 `processed/shard-XX.csv`。训练命令无需改动，
 只需设置：
 
 ```bash
@@ -103,7 +103,7 @@ python Predictor0916/scripts/preprocess_single_csv_8die.py \
 
 ## 使用 8 个 shard 训练预测器
 
-`scripts/train_predictor_8shards.py` 只加载预处理后的 hidden states，不再加载 LLM。脚本合并 8 个 Parquet 后，使用固定随机种子按照约 `train:test:validation = 6:1:1` 拆分：
+`scripts/train_predictor_8shards.py` 只加载预处理后的 hidden states，不再加载 LLM。脚本默认合并 8 个 CSV（也兼容 Parquet），使用固定随机种子按照约 `train:test:validation = 6:1:1` 拆分。对于 16K 样本，三个集合约为 12K/2K/2K：
 
 - `train`：更新 MLP 参数；
 - `test`：训练期间每个 epoch 的模型选择和 early stopping；
@@ -123,19 +123,26 @@ export ASCEND_RT_VISIBLE_DEVICES=0
 python Predictor0916/scripts/train_predictor_8shards.py \
   --preprocessed-dir Predictor0916/data/qwen3.6-preprocessed \
   --output-dir Predictor0916/outputs/qwen3.6-predictor \
+  --shard-pattern "shard-*.csv" \
   --expected-shards 8 \
   --device npu:0 \
   --num-bins 20 \
   --target-quantiles 0.01 0.99 \
-  --loss-type soft_label \
-  --lambda-val 0.95 \
-  --epochs 10 \
+  --loss-type mae \
+  --epochs 50 \
   --batch-size 256 \
-  --learning-rate 2e-5 \
-  --weight-decay 0.0 \
-  --patience 3 \
+  --learning-rate 1e-4 \
+  --weight-decay 1e-4 \
+  --patience 7 \
   --seed 42
 ```
+
+这组参数是 16K 数据的稳健起点：每个 epoch 约 47 个训练 step，50 个 epoch
+给优化器足够的更新机会，实际通常由 early stopping 提前结束。首轮建议直接优化论文主指标
+MAE；`2e-5` 对随机初始化的预测头通常偏保守。之后再做一个小型消融：学习率
+`{5e-5, 1e-4, 3e-4}`、batch size `{128, 256}`、bin 数 `{20, 32}`，只根据
+test split 的 MAE 选配置，最终 validation split 只报告一次。若使用旧 Parquet 数据，额外传入
+`--shard-pattern "shard-*.parquet"`。
 
 `--preprocessed-dir` 可以指向 `preprocess_8die.py` 的输出根目录，也可以直接指向其中的 `processed/`。指向根目录时，脚本还会读取 `inputs/shard-XX.csv`，将原始 split 和行号写入预测结果。
 

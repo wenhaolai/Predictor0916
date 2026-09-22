@@ -8,15 +8,15 @@ export ASCEND_RT_VISIBLE_DEVICES=0
 python Predictor0916/scripts/train_predictor_8shards.py \
   --preprocessed-dir Predictor0916/data/qwen3.6-preprocessed \
   --output-dir Predictor0916/outputs/qwen3.6-predictor \
+  --shard-pattern "shard-*.csv" \
   --expected-shards 8 \
   --device npu:0 \
   --num-bins 20 \
   --target-quantiles 0.01 0.99 \
-  --loss-type soft_label \
-  --lambda-val 0.95 \
-  --epochs 10 \
+  --loss-type mae \
+  --epochs 50 \
   --batch-size 256 \
-  --learning-rate 2e-5 \
-  --weight-decay 0.0 \
-  --patience 3 \
+  --learning-rate 1e-4 \
+  --weight-decay 1e-4 \
+  --patience 7 \
   --seed 42
