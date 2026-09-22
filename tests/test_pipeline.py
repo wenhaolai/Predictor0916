@@ -14,6 +14,14 @@ from Predictor0916.scripts.preprocess_single_csv_8die import (
 )
 from Predictor0916.scripts.train_predictor_8shards import main as shard_training_main
 from Predictor0916.src import Dataset, MLP, Model, Trainer
+from Predictor0916.src.utils import compute_kendall_tau_b
+
+
+def test_kendall_tau_b_handles_order_reversal_and_ties():
+    targets = [1.0, 2.0, 2.0, 4.0]
+    assert compute_kendall_tau_b(targets, targets) == pytest.approx(1.0)
+    assert compute_kendall_tau_b(targets[::-1], targets) == pytest.approx(-1.0)
+    assert compute_kendall_tau_b([1.0, 1.0], [2.0, 3.0]) is None
 
 
 class FakeTokenizer:
@@ -177,7 +185,7 @@ def test_training_main_runs_end_to_end_and_writes_artifacts(tmp_path, monkeypatc
     assert record["split_sizes"] == {"train": 10, "validation": 2}
     assert record["config"]["model_id_or_path"] == "dummy-llm"
     assert len(loaded_models) == 1
-    assert set(record["metrics"]) == {"mae", "rmse", "r2"}
+    assert set(record["metrics"]) == {"mae", "rmse", "r2", "kendall_tau_b"}
     assert (output_dir / "checkpoints" / "best_layers.pt").exists()
     assert (output_dir / "validation_predictions.csv").exists()
     assert (output_dir / "manifest.json").exists()
@@ -425,7 +433,9 @@ def test_predictor_training_combines_eight_shards_and_holds_out_validation(tmp_p
     }
     assert record["config"]["sample_count"] == 32
     assert set(record["config"]["target_statistics"]) >= {"p50", "p99", "max"}
-    assert set(record["metrics"]["final_validation"]) == {"mae", "rmse", "r2"}
+    assert set(record["metrics"]["final_validation"]) == {
+        "mae", "rmse", "r2", "kendall_tau_b"
+    }
     assert len(pd.read_csv(output_dir / "validation_predictions.csv")) == 4
     assert set(pd.read_csv(output_dir / "split_assignments.csv")["assigned_split"]) == {
         "train", "test", "validation"

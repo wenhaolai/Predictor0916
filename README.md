@@ -161,7 +161,7 @@ qwen3.6-predictor/
 
 - `best_layers.pt`：test MAE 最优轮次对应的 MLP 参数；
 - `split_assignments.csv`：每个 shard 行被分到 train、test 或 validation 的记录；
-- `metrics.json`：训练历史、用于模型选择的 test 指标和最终 validation 指标；
+- `metrics.json`：训练历史、用于模型选择的 test 指标和最终 validation 指标；最终指标包括 MAE、RMSE、R² 和 Kendall's Tau-b，Tau-b 只在训练结束后计算，不参与逐 epoch early stopping；
 - `validation_predictions.csv`：最终保留集的预测长度、真实长度、绝对误差及来源信息；
 - `manifest.json`：输入 shard、拆分数量、随机种子、长度范围和训练超参数；
 - `result.json`：本次实验配置、指标及产物路径汇总。

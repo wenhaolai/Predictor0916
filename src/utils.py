@@ -77,8 +77,90 @@ def ensure_dir(path: str | Path) -> Path:
     return result
 
 
-def compute_metrics(predictions: np.ndarray, targets: np.ndarray) -> dict[str, float]:
-    """Compute regression metrics used by the length-prediction experiments."""
+def compute_kendall_tau_b(
+    predictions: np.ndarray,
+    targets: np.ndarray,
+) -> float | None:
+    """Compute Kendall's Tau-b in O(N log N), including tie correction.
+
+    ``None`` is returned when either input has no rank variation, in which case
+    the Tau-b denominator is zero and the statistic is mathematically undefined.
+    """
+    predictions = np.asarray(predictions, dtype=np.float64).reshape(-1)
+    targets = np.asarray(targets, dtype=np.float64).reshape(-1)
+    if predictions.shape != targets.shape:
+        raise ValueError(
+            f"Prediction and target shapes differ: {predictions.shape} != {targets.shape}"
+        )
+    if predictions.size < 2:
+        return None
+    if not np.isfinite(predictions).all() or not np.isfinite(targets).all():
+        raise ValueError("Kendall's Tau-b requires finite predictions and targets.")
+
+    sample_count = predictions.size
+    total_pairs = sample_count * (sample_count - 1) // 2
+    prediction_counts = np.unique(predictions, return_counts=True)[1]
+    target_values, target_inverse, target_counts = np.unique(
+        targets, return_inverse=True, return_counts=True
+    )
+    prediction_ties = int(np.sum(prediction_counts * (prediction_counts - 1) // 2))
+    target_ties = int(np.sum(target_counts * (target_counts - 1) // 2))
+    denominator = np.sqrt(
+        float(total_pairs - prediction_ties) * float(total_pairs - target_ties)
+    )
+    if denominator == 0.0:
+        return None
+
+    # Sort by prediction, then compare each prediction group only against
+    # earlier groups. A Fenwick tree counts lower/higher target ranks without
+    # materializing all O(N^2) pairs.
+    order = np.lexsort((targets, predictions))
+    tree = np.zeros(len(target_values) + 1, dtype=np.int64)
+
+    def prefix_count(rank: int) -> int:
+        count = 0
+        while rank > 0:
+            count += int(tree[rank])
+            rank -= rank & -rank
+        return count
+
+    def add_rank(rank: int) -> None:
+        while rank < len(tree):
+            tree[rank] += 1
+            rank += rank & -rank
+
+    concordant = 0
+    discordant = 0
+    seen = 0
+    group_start = 0
+    while group_start < sample_count:
+        group_end = group_start + 1
+        prediction = predictions[order[group_start]]
+        while (
+            group_end < sample_count
+            and predictions[order[group_end]] == prediction
+        ):
+            group_end += 1
+
+        for position in range(group_start, group_end):
+            target_rank = int(target_inverse[order[position]]) + 1
+            lower = prefix_count(target_rank - 1)
+            lower_or_equal = prefix_count(target_rank)
+            concordant += lower
+            discordant += seen - lower_or_equal
+        for position in range(group_start, group_end):
+            add_rank(int(target_inverse[order[position]]) + 1)
+        seen += group_end - group_start
+        group_start = group_end
+
+    return float((concordant - discordant) / denominator)
+
+
+def compute_metrics(
+    predictions: np.ndarray,
+    targets: np.ndarray,
+) -> dict[str, float | None]:
+    """Compute final regression and ranking metrics for length prediction."""
     predictions = np.asarray(predictions, dtype=np.float64).reshape(-1)
     targets = np.asarray(targets, dtype=np.float64).reshape(-1)
     if predictions.shape != targets.shape:
@@ -93,7 +175,12 @@ def compute_metrics(predictions: np.ndarray, targets: np.ndarray) -> dict[str, f
     rmse = float(np.sqrt(np.mean(np.square(residual))))
     target_variance = float(np.sum(np.square(targets - targets.mean())))
     r2 = 0.0 if target_variance == 0.0 else 1.0 - float(np.sum(np.square(residual))) / target_variance
-    return {"mae": mae, "rmse": rmse, "r2": r2}
+    return {
+        "mae": mae,
+        "rmse": rmse,
+        "r2": r2,
+        "kendall_tau_b": compute_kendall_tau_b(predictions, targets),
+    }
 
 
 def _json_default(value: Any) -> Any:

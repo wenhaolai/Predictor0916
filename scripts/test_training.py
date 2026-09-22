@@ -346,7 +346,16 @@ def main(argv: Sequence[str] | None = None) -> dict[str, object]:
     save_json(configuration, output_dir / "manifest.json")
     save_json({"metrics": metrics, "history": history}, output_dir / "metrics.json")
     append_jsonl([record], output_dir / "results.jsonl")
-    logger.info("Validation MAE %.4f, RMSE %.4f", metrics["mae"], metrics["rmse"])
+    logger.info(
+        "Validation MAE %.4f, RMSE %.4f, Kendall Tau-b %s",
+        metrics["mae"],
+        metrics["rmse"],
+        (
+            f'{metrics["kendall_tau_b"]:.4f}'
+            if metrics["kendall_tau_b"] is not None
+            else "undefined"
+        ),
+    )
     return record
 
 

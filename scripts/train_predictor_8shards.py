@@ -376,10 +376,15 @@ def main(argv: Sequence[str] | None = None) -> dict[str, object]:
     save_json(metrics_payload, output_dir / "metrics.json")
     save_json(record, output_dir / "result.json")
     logger.info(
-        "Final validation MAE %.4f, RMSE %.4f, R2 %.4f",
+        "Final validation MAE %.4f, RMSE %.4f, R2 %.4f, Kendall Tau-b %s",
         validation_metrics["mae"],
         validation_metrics["rmse"],
         validation_metrics["r2"],
+        (
+            f'{validation_metrics["kendall_tau_b"]:.4f}'
+            if validation_metrics["kendall_tau_b"] is not None
+            else "undefined"
+        ),
     )
     return record
 
