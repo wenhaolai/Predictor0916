@@ -499,6 +499,48 @@ Predictor0916/outputs/test_training_npu/
 - `history`：训练历史；
 - `artifacts`：checkpoint 和预测 CSV 的路径。
 
+## MLP 推理性能实验
+
+`scripts/benchmark_mlp_latency.py` 直接加载训练生成的
+`checkpoints/best_layers.pt`，并针对 CSV 的 `hidden_state` 列调用
+`MLP.forward(batch)`。它不会调用 `Trainer.predict()`，也不会统计 CSV 读取、
+checkpoint 加载或输入搬运到设备的时间。
+
+CPU 示例：
+
+```bash
+python Predictor0916/scripts/benchmark_mlp_latency.py \
+  --device cpu \
+  --data-path Predictor0916/path/to/processed.csv \
+  --checkpoint Predictor0916/outputs/training/checkpoints/best_layers.pt \
+  --output-dir Predictor0916/outputs/latency_cpu
+```
+
+Ascend NPU 示例：
+
+```bash
+python Predictor0916/scripts/benchmark_mlp_latency.py \
+  --device npu:0 \
+  --data-path Predictor0916/path/to/processed.csv \
+  --checkpoint Predictor0916/outputs/training/checkpoints/best_layers.pt \
+  --output-dir Predictor0916/outputs/latency_npu
+```
+
+默认依次测试 batch size `1 2 4 8 16 32`，每种配置先执行 5 个不计时的
+warm-up batch。正式测量前同步设备并记录一次起始时间，全部样本执行完后再次
+同步并记录结束时间。输入只在计时前搬运一次到目标设备。最后一个不完整 batch
+也会执行并计入统计。
+
+结果同时写入 `latency_results.csv` 和 `latency_results.json`，主要字段为：
+
+- `total_seconds`：该 batch size 下跑完全部样本的总耗时；
+- `average_request_ms`：总耗时除以样本数；
+- `average_batch_ms`：总耗时除以实际 forward 调用次数；
+- `throughput_requests_per_second`：每秒完成的请求数。
+
+如需严格禁用预热，可传入 `--warmup-batches 0`。checkpoint 中的输入维度和
+bin 数会自动推断，并与 CSV 特征维度进行校验。
+
 ## 测试
 
 从仓库根目录执行：
