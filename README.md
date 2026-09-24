@@ -541,6 +541,22 @@ warm-up batch。正式测量前同步设备并记录一次起始时间，全部�
 如需严格禁用预热，可传入 `--warmup-batches 0`。checkpoint 中的输入维度和
 bin 数会自动推断，并与 CSV 特征维度进行校验。
 
+### CPU/NPU 性能对比图
+
+分别完成 CPU 和 NPU 基准测试后，可以将两份 `latency_results.csv` 绘制为
+横向三联图：
+
+```bash
+python Predictor0916/scripts/plot_mlp_latency.py \
+  --cpu-results Predictor0916/outputs/latency_cpu/latency_results.csv \
+  --npu-results Predictor0916/outputs/latency_npu/latency_results.csv \
+  --output-dir paper/figures
+```
+
+脚本分别展示平均请求延迟、平均 batch 延迟和吞吐量，横坐标统一为 batch size
+`1 2 4 8 16 32`，CPU/NPU 使用不同颜色和点形。输出包括论文使用的矢量文件
+`mlp_latency_comparison.pdf` 和 300 DPI 预览图 `mlp_latency_comparison.png`。
+
 ## 测试
 
 从仓库根目录执行：
